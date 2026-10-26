@@ -1,4 +1,5 @@
-import { realClock, type Clock } from './clock.ts';
+import { checkNumber } from './check.ts';
+import { realClock, sleep, type Clock } from './clock.ts';
 
 /** Ответ не 2xx или тело, которое не прошло проверку. */
 export class HttpError extends Error {
@@ -38,6 +39,14 @@ export interface RetryRuntime {
 
 export const retryDefaults: Required<RetryOptions> = { retries: 4, baseMs: 500, maxMs: 30_000, maxRetryAfterMs: 60_000 };
 
+/** Числа в RetryOptions — конечные и неотрицательные, retries — целое. Иначе RangeError. */
+export function checkRetryOptions(o: RetryOptions, prefix = 'retry'): void {
+  checkNumber(`${prefix}.retries`, o.retries, { integer: true });
+  checkNumber(`${prefix}.baseMs`, o.baseMs);
+  checkNumber(`${prefix}.maxMs`, o.maxMs);
+  checkNumber(`${prefix}.maxRetryAfterMs`, o.maxRetryAfterMs);
+}
+
 export function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 408 || status >= 500;
 }
@@ -64,6 +73,7 @@ export function isRetryable(err: unknown): boolean {
 }
 
 export async function withRetry<T>(fn: (attempt: number) => Promise<T>, options: RetryOptions = {}, rt: RetryRuntime = {}): Promise<T> {
+  checkRetryOptions(options);
   const o = { ...retryDefaults, ...options };
   const clock = rt.clock ?? realClock;
   const random = rt.random ?? Math.random;
@@ -75,8 +85,8 @@ export async function withRetry<T>(fn: (attempt: number) => Promise<T>, options:
       const hinted = err instanceof HttpError ? err.retryAfterMs : undefined;
       const delay = hinted !== undefined ? Math.min(hinted, o.maxRetryAfterMs) : backoffDelay(attempt, o, random);
       rt.onRetry?.(err, attempt + 1, delay);
-      await clock.sleep(delay);
-      rt.signal?.throwIfAborted();
+      // пауза прерывается отменой сразу, а не после Retry-After в минуту
+      await sleep(clock, delay, rt.signal);
     }
   }
 }

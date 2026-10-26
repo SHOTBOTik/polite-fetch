@@ -1,7 +1,8 @@
 import { TokenBucket, type LimitSpec } from './bucket.ts';
 import { cacheKey, DiskCache } from './cache.ts';
+import { checkNumber } from './check.ts';
 import { realClock, type Clock } from './clock.ts';
-import { HttpError, isRetryableStatus, parseRetryAfter, withRetry, type RetryOptions } from './retry.ts';
+import { checkRetryOptions, HttpError, isRetryableStatus, parseRetryAfter, withRetry, type RetryOptions } from './retry.ts';
 
 export type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -77,10 +78,19 @@ export interface Client {
 }
 
 const noRetry: RetryOptions = { retries: 0 };
+/** Больше setTimeout не умеет: такой таймаут сработал бы сразу. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
 const REPLAYABLE = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
 const CACHEABLE = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export function createClient(options: ClientOptions = {}): Client {
+  // Опции проверяются сразу: NaN в retries — бесконечные повторы, ratePerSec: 0 — вечное ожидание.
+  checkNumber('timeoutMs', options.timeoutMs, { positive: true, max: MAX_TIMEOUT_MS });
+  if (options.retry) checkRetryOptions(options.retry);
+  for (const [k, spec] of Object.entries(options.limits ?? {})) {
+    checkNumber(`limits['${k}'].ratePerSec`, spec.ratePerSec ?? NaN, { positive: true });
+    checkNumber(`limits['${k}'].burst`, spec.burst, { positive: true });
+  }
   const clock = options.clock ?? realClock;
   const fetchFn: FetchFn = options.fetch ?? ((url, init) => fetch(url, init));
   const emit = options.onEvent ?? (() => {});
@@ -101,7 +111,7 @@ export function createClient(options: ClientOptions = {}): Client {
   async function once(method: string, url: string, attempt: number, key: string, o: RequestOptions): Promise<unknown> {
     const weight = o.weight ?? 1;
     // Каждая попытка, включая повтор, тратит вес: сервер считает и их.
-    await bucket(key)?.take(weight);
+    await bucket(key)?.take(weight, o.signal);
     o.signal?.throwIfAborted();
     stats.requests++;
     emit({ type: 'request', method, url, attempt, limitKey: key, weight });
@@ -143,6 +153,9 @@ export function createClient(options: ClientOptions = {}): Client {
 
   async function json<T>(url: string, o: RequestOptions = {}): Promise<T> {
     const method = (o.method ?? 'GET').toUpperCase();
+    checkNumber('weight', o.weight);
+    checkNumber('timeoutMs', o.timeoutMs, { positive: true, max: MAX_TIMEOUT_MS });
+    if (o.retry) checkRetryOptions(o.retry);
     const key = o.limitKey ?? (options.limitKey ?? ((u: URL) => u.host))(new URL(url));
     // Повтор или ответ из кэша для POST с побочным действием — второе действие или ни одного. Поэтому общие
     // retry и cache.ttlMs действуют только на запросы, которые можно повторить; явная опция запроса сильнее.

@@ -57,6 +57,8 @@ console.log(client.stats); // { requests: 1, retries: 0, cacheHits: 0, cacheMiss
 | `onEvent(e)` | Событие на каждый шаг, см. ниже. |
 | `fetch`, `clock`, `random` | Подмена для тестов: свой `fetch`, часы `{ now, sleep }`, генератор джиттера. |
 
+Числа в опциях проверяются сразу: `retries` — целое ≥ 0, паузы ≥ 0, `timeoutMs` и `ratePerSec`/`burst` — больше нуля, всё конечное. `NaN`, `Infinity` или отрицательное значение — `RangeError` с именем опции, а не бесконечные повторы или вечное ожидание. То же для `weight`, `timeoutMs` и `retry` у запроса.
+
 ### `client.json<T>(url, options?)`
 
 | Опция | Что делает |
@@ -67,7 +69,7 @@ console.log(client.stats); // { requests: 1, retries: 0, cacheHits: 0, cacheMiss
 | `cacheTtlMs` | Свой срок в кэше; `0` — не читать и не писать кэш. |
 | `idempotent` | Можно ли повторить запрос и взять ответ из кэша. По умолчанию `true` для GET, HEAD, OPTIONS; PUT и DELETE повторяются, но не кэшируются; POST, PATCH и прочие не повторяются и не кэшируются, пока не задать `idempotent: true` или явно `retry`/`cacheTtlMs`. Повтор POST с побочным действием выполнил бы его дважды, ответ из кэша — ни разу. |
 | `timeoutMs`, `retry` | Свои таймаут и повторы. |
-| `signal` | Отмена снаружи. Отменённый запрос не повторяется. |
+| `signal` | Отмена снаружи. Прерывает и попытку, и ожидание в ведре, и паузу перед повтором (даже минутный `Retry-After`). Отменённый запрос не повторяется. |
 | `check(data)` | Проверка тела. Бросьте `HttpError` с `retryable: true`, если сервер ответил 200 с ошибкой внутри, — запрос повторится. |
 
 Ошибка ответа — `HttpError` с полями `status`, `retryable`, `retryAfterMs` и `body` (первые 500 знаков). Таймаут — `DOMException` с именем `TimeoutError`.

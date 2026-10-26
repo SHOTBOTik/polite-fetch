@@ -1,4 +1,5 @@
-import { realClock, type Clock } from './clock.ts';
+import { checkNumber } from './check.ts';
+import { abortable, realClock, sleep, type Clock } from './clock.ts';
 
 export interface LimitSpec {
   /** Сколько веса восстанавливается за секунду. */
@@ -13,7 +14,8 @@ export interface LimitSpec {
  * 20% на залп, 80% на равномерный поток.
  */
 export function limitForWindow(limit: number, windowSec: number): Required<LimitSpec> {
-  if (!(limit > 0) || !(windowSec > 0)) throw new Error('limit и windowSec должны быть > 0');
+  checkNumber('limit', limit, { positive: true });
+  checkNumber('windowSec', windowSec, { positive: true });
   return { burst: Math.max(1, Math.floor(limit * 0.2)), ratePerSec: (limit * 0.8) / windowSec };
 }
 
@@ -30,8 +32,9 @@ export class TokenBucket {
   private clock: Clock;
 
   constructor(spec: LimitSpec, clock: Clock = realClock) {
+    checkNumber('ratePerSec', spec.ratePerSec ?? NaN, { positive: true });
+    checkNumber('burst', spec.burst, { positive: true });
     const burst = spec.burst ?? Math.max(1, spec.ratePerSec);
-    if (!(burst > 0) || !(spec.ratePerSec > 0)) throw new Error('ratePerSec и burst должны быть > 0');
     this.burst = burst;
     this.ratePerSec = spec.ratePerSec;
     this.clock = clock;
@@ -51,23 +54,27 @@ export class TokenBucket {
     return this.tokens;
   }
 
-  /** Дождаться, пока накопится weight, и потратить его. */
-  take(weight = 1): Promise<void> {
+  /** Дождаться, пока накопится weight, и потратить его. signal снимает запрос из очереди и прерывает ожидание. */
+  take(weight = 1, signal?: AbortSignal): Promise<void> {
+    checkNumber('weight', weight);
     // Вес больше залпа не дождался бы никогда: ждём полного ведра.
-    const w = Math.min(Math.max(0, weight), this.burst);
+    const w = Math.min(weight, this.burst);
     const run = async () => {
       for (;;) {
+        // отменённый запрос, дождавшийся очереди, веса не тратит
+        signal?.throwIfAborted();
         this.refill();
         if (this.tokens >= w) {
           this.tokens -= w;
           return;
         }
-        await this.clock.sleep(Math.ceil(((w - this.tokens) / this.ratePerSec) * 1000));
+        await sleep(this.clock, Math.ceil(((w - this.tokens) / this.ratePerSec) * 1000), signal);
       }
     };
     const p = this.queue.then(run);
     this.queue = p.catch(() => undefined);
-    return p;
+    // отмена, пока запрос ещё стоит в очереди за другими, — отказ сразу
+    return abortable(p, signal);
   }
 
   /** Довесить вес, который стал известен только по ответу. Ведро уходит в долг. */
